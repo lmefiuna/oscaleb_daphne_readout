@@ -1,11 +1,8 @@
 import os
-import sys
 import struct
 import time
 from logger import logger
 from multiprocessing import Process
-import matplotlib.pyplot as plt
-import numpy as np
 import mysql.connector
 from oei import OEI
 from daphne_channel import DaphneChannel
@@ -14,9 +11,11 @@ from typing import Tuple
 
 DAPHNE_IP="192.168.0.200"
 
-STORE_WAVEFORMS=False
-LOAD_DATA_TO_DB=False
+STORE_WAVEFORMS=True
+UPLOAD_TO_DB=True
+UPLOAD_PERIOD_SECONDS=60
 UPLOAD_BUFFER_PATH="/home/lmenode1/TFG_OSCAR_CALEB/oscaleb_readout/upload_buffer.csv"
+UPLOAD_BUFFER_HEADER="timestamp,top,mid,bot\n"
 LOG_TO_FILE=True
 LOG_FILE_PATH="/home/lmenode1/TFG_OSCAR_CALEB/oscaleb_readout/.log"
 
@@ -44,28 +43,73 @@ def write_to_file(ts, wf, filename):
             for sample in segmentos[i]:
                 f.write(struct.pack(">H", sample))
 
-SQL_COMMAND = """\
-INSERT INTO ()
+def store_data_to_buffer(
+        timestamp,
+        trigger_rate_top,
+        trigger_rate_mid,
+        trigger_rate_bot):
+    # logger.debug("Storing data to buffer")
+    with open(UPLOAD_BUFFER_PATH, "a") as f:
+        f.write(f"{timestamp},{trigger_rate_top},{trigger_rate_mid},{trigger_rate_bot}\n")
+
+SQL_COMMAND = f"""\
+INSERT INTO {DB_NAME}.{DB_TABLE}
 (`timestamp`, TOP, MID, BOT)
 VALUES(%s, %s, %s, %s);
 """
 
-def insert_to_sql(timestamp, trigger_rate_top, trigger_rate_mid, trigger_rate_bot):
-    connection = mysql.connector.connect(
-        user="root",
-        password="",
-        host="127.0.0.1",
-        database="")
-    
-    cursor = connection.cursor()
-    cursor.execute(SQL_COMMAND, (timestamp, trigger_rate_top, trigger_rate_mid, trigger_rate_bot))
-    connection.commit()
-    cursor.close()
-    connection.close()
-    # if connection and connection.is_connected():
-    #     with connection.cursor() as cursor:
-            # result = 
+def upload_buffer_to_sql():
+    try:
+        with open(UPLOAD_BUFFER_PATH, "r") as f:
+            header = f.readline()
 
+            if header != UPLOAD_BUFFER_HEADER:
+                f.seek(0)
+
+            records_to_insert = []
+
+            for line in f.readlines():
+                record = tuple([int(x) for x in line.strip("\n").split(",")])
+                records_to_insert.append(record)
+    except FileNotFoundError:
+        logger.error(f"upload_to_sql: buffer file {UPLOAD_BUFFER_PATH} not found")
+    except Exception as e:
+        logger.error(f"upload_to_sql: {e}")
+
+    try:
+        connection = mysql.connector.connect(
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            database=DB_NAME)
+
+        cursor = connection.cursor()
+
+        cursor.executemany(SQL_COMMAND, records_to_insert)
+        connection.commit()
+        logger.info(f"upload_to_sql: successfully uploaded {cursor.rowcount} records to table.")
+        with open(UPLOAD_BUFFER_PATH, "w") as f:
+            logger.info(f"upload_to_sql: flushed upload buffer.")
+            f.write(UPLOAD_BUFFER_HEADER)
+    except mysql.connector.Error as error:
+        logger.error(f"upload_to_sql: failed to insert record into MySQL table: {error}")
+    except Exception as e:
+        logger.error(f"upload_to_sql: {e}")
+    finally:
+        cursor.close()
+        connection.close()
+
+def store_data(timestamp,
+        trigger_rate_top,
+        trigger_rate_mid,
+        trigger_rate_bot,
+        upload_buffer_now):
+    store_data_to_buffer(timestamp,
+                         trigger_rate_top,
+                         trigger_rate_mid,
+                         trigger_rate_bot)
+    if upload_buffer_now:
+        upload_buffer_to_sql()
 
 def main():
     channel_top = DaphneChannel(
@@ -111,6 +155,8 @@ def main():
     logger.debug("Setting self trigger mode")
     thing.write(reg.SELF_TRIGGER_MODE_ADDR, [1234])
 
+    last_upload_time = None
+
     while True:
         inicio = time.time()
         
@@ -155,21 +201,50 @@ def main():
                         ch.timestamp_data, ch.waveform_data, f"{inicio_int}_{ch.identifier}"))
                     write_process.start()
 
-        # if load_to_sql:
-        #     if len(wf) > 0:
-        #         load_to_sql_process = Process(target=insert_to_sql, args=(inicio_int, cuentas, 0, 0))
-        #         load_to_sql_process.start()
+        if UPLOAD_TO_DB:
+            cuentas_top = 0
+            cuentas_mid = 0
+            cuentas_bot = 0
+
+            if CH_TOP_ENABLE:
+                cuentas_top = channel_top.cuentas
+            if CH_MID_ENABLE:
+                cuentas_mid = channel_mid.cuentas
+            if CH_BOT_ENABLE:
+                cuentas_bot = channel_bot.cuentas
+
+            upload_buffer_now = False
+
+            if (last_upload_time is None) or \
+                (time.time() - last_upload_time > UPLOAD_PERIOD_SECONDS):
+                # logger.debug("last upload time is none or greater than last period")
+                upload_buffer_now = True
+
+            store_data_process = Process(target=store_data,
+                    args=(inicio_int,
+                        cuentas_top,
+                        cuentas_mid,
+                        cuentas_bot,
+                        upload_buffer_now))
+            store_data_process.start()
+            store_data_process.join()
+
+            if upload_buffer_now:
+                upload_buffer_now = False
+                last_upload_time = time.time()
         os.system("clear")
-        # with open("upload_buffer.csv", "at") as f:
-        #     f.write(f"{inicio_int},{cuentas}\n")
+
         print("======= Mango/DAPHNE Acquisition System =======")
         print()
-        print(f"Uploading to DB:\t{LOAD_DATA_TO_DB}")
+        print(f"Uploading to DB:\t{UPLOAD_TO_DB}")
+        if UPLOAD_TO_DB:
+            print(f"Uploading period:\t{UPLOAD_PERIOD_SECONDS} seg")
+
         print(f"Storing Waveforms:\t{STORE_WAVEFORMS}")
         print()
-        print(f"Canal\tCuentas\tCeros")
+        print(f"Canal\tThreshold\tCuentas\tCeros")
         for ch in channels:
-            print(f"{ch.identifier}:\t{ch.cuentas}\t{ch.contador_ceros}")
+            print(f"{ch.identifier}\t{ch.threshold_adc_units}\t\t{ch.cuentas}\t{ch.contador_ceros}")
         print()    
         print(f"Current Timestamp: {inicio_int}")
         print(f"Delta time:\t{time.time()-inicio}")
