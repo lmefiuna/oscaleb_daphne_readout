@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import struct
 import time
+import os
+
+import mysql.connector
 
 thing = OEI("192.168.0.200")
 FIFO_WR_ADDR = 0x000000A
@@ -46,12 +49,34 @@ def write_to_file(ts, wf, timestamp_inicio_int, plot=False):
         plt.savefig(f"./plots/{timestamp_inicio_int}.png", dpi=600)
         plt.close(figure)
 
+SQL_COMMAND = """\
+INSERT INTO muon_matrix.muon_daphne
+(`timestamp`, TOP, MID, BOT)
+VALUES(%s, %s, %s, %s);
+"""
+
+def insert_to_sql(timestamp, trigger_rate_top, trigger_rate_mid, trigger_rate_bot):
+    connection = mysql.connector.connect(
+        user="root",
+        password="",
+        host="127.0.0.1",
+        database="")
+    
+    cursor = connection.cursor()
+    cursor.execute(SQL_COMMAND, (timestamp, trigger_rate_top, trigger_rate_mid, trigger_rate_bot))
+    connection.commit()
+    cursor.close()
+    connection.close()
+    # if connection and connection.is_connected():
+    #     with connection.cursor() as cursor:
+            # result = 
+
 
 def main():
     CANAL = FIFO_TOP_ADDR
     CANAL_TS = FIFO_TOP_TS_ADDR
     thing = OEI(f"192.168.0.200")
-    thing.write(0x00006000, [7780])  # 8250 203A  SET threshold
+    thing.write(0x00006000, [8120])  # 8250 203A  SET threshold
     print("SELF-TRIGGER THRESHOLD %d" % thing.read(0x00006000, 1)[2])  # NACHO
     thing.write(0x00006010, [1234])
 
@@ -61,7 +86,8 @@ def main():
         doutts = thing.readf(CANAL_TS, 1)[2:]
 
     plot = False
-    store = False
+    store = True
+    load_to_sql = True
 
     while True:
         inicio = time.time()
@@ -103,7 +129,15 @@ def main():
                 write_process = Process(target=write_to_file, args=(
                     ts, wf, inicio_int, plot))
                 write_process.start()
-        print(f"{time.time()-inicio}\tTrigger Rate: {cuentas}\tCeros: {contador_ceros}")
+
+        if load_to_sql:
+            if len(wf) > 0:
+                load_to_sql_process = Process(target=insert_to_sql, args=(inicio_int, cuentas, 0, 0))
+                load_to_sql_process.start()
+        os.system("clear")
+        # with open("upload_buffer.csv", "at") as f:
+        #     f.write(f"{inicio_int},{cuentas}\n")
+        print(f"Delta tiempo:\t{time.time()-inicio}\nTrigger Rate:\t{cuentas}\nCeros:\t{contador_ceros}")
 
 
 if __name__ == "__main__":
