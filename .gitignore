@@ -1,6 +1,9 @@
 /waveforms*
 /plots
 upload_buffer.csv
+.log
+facen/
+.directory
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

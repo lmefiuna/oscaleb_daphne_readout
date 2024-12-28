@@ -2,7 +2,7 @@ import os
 import logging
 
 LOG_TO_FILE=True
-LOG_FILENAME="/home/lmenode1/TFG_OSCAR_CALEB/oscaleb_readout/.log"
+LOG_FILENAME=".log"
 
 logger = logging.getLogger("daphne")
 logger.setLevel(logging.DEBUG)
